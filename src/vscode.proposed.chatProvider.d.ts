@@ -100,9 +100,7 @@ declare module "vscode" {
 	}
 
 	export type LanguageModelResponsePart2 =
-		| LanguageModelResponsePart
-		| LanguageModelDataPart
-		| LanguageModelThinkingPart;
+		LanguageModelResponsePart | LanguageModelDataPart | LanguageModelThinkingPart;
 
 	/**
 	 * A [JSON Schema](https://json-schema.org) describing configuration options for a language model.
@@ -131,7 +129,10 @@ declare module "vscode" {
 	};
 
 	export interface LanguageModelChatProvider<T extends LanguageModelChatInformation = LanguageModelChatInformation> {
-		provideLanguageModelChatInformation(options: PrepareLanguageModelChatModelOptions, token: CancellationToken): ProviderResult<T[]>;
+		provideLanguageModelChatInformation(
+			options: PrepareLanguageModelChatModelOptions,
+			token: CancellationToken
+		): ProviderResult<T[]>;
 		provideLanguageModelChatResponse(
 			model: T,
 			messages: readonly LanguageModelChatRequestMessage[],

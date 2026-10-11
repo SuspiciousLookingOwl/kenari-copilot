@@ -7,7 +7,7 @@ import {
 	Progress,
 } from "vscode";
 
-import type { OpenCodeGoModelItem } from "../types";
+import type { KenariModelItem } from "../types";
 
 import type {
 	AnthropicMessage,
@@ -20,7 +20,19 @@ import type {
 	AnthropicStreamChunk,
 } from "./anthropicTypes";
 
-import { isImageMimeType, isToolResultPart, convertToolsToOpenAI, mapRole, storeDataUriImages, replaceDataUriImages, isResourceLinkMimeType, parseResourceLinkData, resolveResourceLinkToImage } from "../utils";
+import {
+	isImageMimeType,
+	isToolResultPart,
+	createApiError,
+	createStreamError,
+	convertToolsToOpenAI,
+	mapRole,
+	storeDataUriImages,
+	replaceDataUriImages,
+	isResourceLinkMimeType,
+	parseResourceLinkData,
+	resolveResourceLinkToImage,
+} from "../utils";
 
 import { CommonApi } from "../commonApi";
 import { logger } from "../logger";
@@ -34,39 +46,55 @@ import {
 	type AnthropicThinkingSignature,
 } from "./thinkingSignature";
 
+/** Default thinking budget when the user picked a level-less "on". */
+const THINKING_BUDGET_DEFAULT = 8192;
+
+/** Smallest budget the API accepts, and the floor below which thinking is refused. */
+const THINKING_BUDGET_MIN = 1024;
+
+/** `max_tokens` Kenari applies when a request does not set one. */
+const ANTHROPIC_DEFAULT_MAX_TOKENS = 65536;
+
 /**
  * Build the `thinking` / `output_config` fields for an Anthropic request body.
  *
- * Anthropic 5.x models (e.g. claude-haiku-5-5) only accept adaptive thinking.
- * The legacy `thinking.type: "enabled"` + `budget_tokens` form is rejected with
- * a 400 error, and the thinking depth must instead be carried by
- * `output_config.effort`. Adaptive models already set `thinkingMode: "adaptive"`
- * or use the internal `"adaptive"` effort marker.
+ * Named effort levels map onto `output_config.effort`; otherwise a token budget
+ * is used. `thinking: {"type": "disabled"}` requests the off switch. Returns an
+ * empty object when the user made no explicit choice, so the model's own
+ * default applies.
  *
- * Returns an empty object when the model's schema rejects the `thinking` field
- * entirely (`supportsThinkingParam === false`).
+ * The budget must be at least 1,024 and below `max_tokens`, so it is clamped
+ * against the `max_tokens` sent in the same body. With no room for it, or a
+ * `max_tokens` of 1,024 or less, no thinking is requested at all.
  *
  * @param um The resolved model item for the request.
- * @returns An object containing the `thinking` and/or `output_config` fields.
+ * @param maxTokens The `max_tokens` sent in the same request body.
  */
 export function buildAnthropicThinkingConfig(
-	um: OpenCodeGoModelItem | undefined
-): { thinking?: AnthropicRequestBody["thinking"]; output_config?: AnthropicRequestBody["output_config"] } {
-	if (um?.supportsThinkingParam === false) {
-		return {};
-	}
-	if (um?.enable_thinking !== true) {
+	um: KenariModelItem | undefined,
+	maxTokens?: number
+): {
+	thinking?: AnthropicRequestBody["thinking"];
+	output_config?: AnthropicRequestBody["output_config"];
+} {
+	if (um?.enable_thinking === false) {
 		return { thinking: { type: "disabled" } };
 	}
-	const isAdaptive = um?.thinkingMode === "adaptive" || um?.reasoning_effort === "adaptive";
-	if (isAdaptive) {
-		const effort = um?.reasoning_effort;
-		return {
-			thinking: { type: "adaptive" },
-			...(effort && effort !== "adaptive" ? { output_config: { effort } } : {}),
-		};
+	if (um?.enable_thinking !== true) {
+		return {};
 	}
-	return { thinking: { type: "enabled", budget_tokens: 8192 } };
+	const effort = um?.reasoning_effort;
+	if (effort && effort !== "enabled" && effort !== "adaptive") {
+		return { output_config: { effort } };
+	}
+	// Sending a budget at or above `max_tokens` would be rejected, so omit the
+	// block entirely when there is no room for it.
+	const budgetLimit = maxTokens !== undefined ? maxTokens - 1 : Number.POSITIVE_INFINITY;
+	if (budgetLimit < THINKING_BUDGET_MIN) {
+		return {};
+	}
+	const budget = Math.min(um?.thinking_budget ?? THINKING_BUDGET_DEFAULT, budgetLimit);
+	return { thinking: { type: "enabled", budget_tokens: budget } };
 }
 
 export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBody> {
@@ -95,10 +123,21 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		this._thinkingBlockText = "";
 		this._thinkingBlockSignature = "";
 		this._inThinkingBlock = false;
+		// Cleared per round so a vision proxy round cannot report the previous
+		// round's prompt size.
+		this._anthropicInputTokens = 0;
+		this._anthropicCacheReadTokens = 0;
+		this._anthropicCacheCreationTokens = 0;
 	}
 
 	/** Accumulated input tokens from Anthropic message_start for usage reporting. */
 	private _anthropicInputTokens = 0;
+
+	/** Cache read tokens reported on message_start. */
+	private _anthropicCacheReadTokens = 0;
+
+	/** Cache creation tokens reported on message_start. */
+	private _anthropicCacheCreationTokens = 0;
 
 	/**
 	 * Convert VS Code chat messages to Anthropic message format.
@@ -139,7 +178,10 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 								} else if (inner instanceof vscode.LanguageModelTextPart) {
 									// Scan text for base64 data URI images
 									storeDataUriImages(inner.value, imagesToStore);
-								} else if (inner instanceof vscode.LanguageModelDataPart && isResourceLinkMimeType(inner.mimeType)) {
+								} else if (
+									inner instanceof vscode.LanguageModelDataPart &&
+									isResourceLinkMimeType(inner.mimeType)
+								) {
 									// MCP tools may return images as resource links
 									// (application/vnd.code.resource-link); resolve them
 									// to actual image bytes for the ask_image proxy.
@@ -231,7 +273,10 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 									imageIndex += result.count;
 									toolTexts.push(result.text);
 								}
-							} else if (inner instanceof vscode.LanguageModelDataPart && isImageMimeType(inner.mimeType)) {
+							} else if (
+								inner instanceof vscode.LanguageModelDataPart &&
+								isImageMimeType(inner.mimeType)
+							) {
 								if (modelSupportsVision) {
 									// Vision models receive the actual image content
 									// (e.g. the built-in view_image tool result).
@@ -244,10 +289,15 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 										},
 									});
 								} else {
-									toolTexts.push(`\n[Image data from tool call (imageIndex=${imageIndex}). I am a text-only model and CANNOT see images directly. I MUST call the ask_image tool to learn about it.\n\nRecommended strategy:\n1. First call ask_image for a brief description to get an overview of the image.\n2. Then call ask_image again with specific questions about details you need (e.g., colors, text content, UI elements, error messages, or any other visible information).\n]`);
+									toolTexts.push(
+										`\n[Image data from tool call (imageIndex=${imageIndex}). I am a text-only model and CANNOT see images directly. I MUST call the ask_image tool to learn about it.\n\nRecommended strategy:\n1. First call ask_image for a brief description to get an overview of the image.\n2. Then call ask_image again with specific questions about details you need (e.g., colors, text content, UI elements, error messages, or any other visible information).\n]`
+									);
 									imageIndex++;
 								}
-							} else if (inner instanceof vscode.LanguageModelDataPart && isResourceLinkMimeType(inner.mimeType)) {
+							} else if (
+								inner instanceof vscode.LanguageModelDataPart &&
+								isResourceLinkMimeType(inner.mimeType)
+							) {
 								// MCP tools may return images as resource links
 								// (application/vnd.code.resource-link) instead of raw
 								// image data; resolve the link and pass the image through.
@@ -263,15 +313,15 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 											},
 										});
 									} else {
-										toolTexts.push(`\n[Image data from tool call (imageIndex=${imageIndex}). I am a text-only model and CANNOT see images directly. I MUST call the ask_image tool to learn about it.\n\nRecommended strategy:\n1. First call ask_image for a brief description to get an overview of the image.\n2. Then call ask_image again with specific questions about details you need (e.g., colors, text content, UI elements, error messages, or any other visible information).\n]`);
+										toolTexts.push(
+											`\n[Image data from tool call (imageIndex=${imageIndex}). I am a text-only model and CANNOT see images directly. I MUST call the ask_image tool to learn about it.\n\nRecommended strategy:\n1. First call ask_image for a brief description to get an overview of the image.\n2. Then call ask_image again with specific questions about details you need (e.g., colors, text content, UI elements, error messages, or any other visible information).\n]`
+										);
 										imageIndex++;
 									}
 								} else {
 									const link = parseResourceLinkData(inner.data);
 									toolTexts.push(
-										link
-											? `\n[Tool returned an unresolvable resource link: ${link.uri}]`
-											: ""
+										link ? `\n[Tool returned an unresolvable resource link: ${link.uri}]` : ""
 									);
 								}
 							}
@@ -418,7 +468,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 
 	prepareRequestBody(
 		rb: AnthropicRequestBody,
-		um: OpenCodeGoModelItem | undefined,
+		um: KenariModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): AnthropicRequestBody {
 		// Set max_tokens (required for Anthropic)
@@ -450,15 +500,30 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			rb.top_k = um.top_k;
 		}
 
+		// Add stop sequences. VS Code passes them as `modelOptions.stop` on the
+		// OpenAI path; the Messages equivalent is `stop_sequences`.
+		const stopOption = (options?.modelOptions as Record<string, unknown> | undefined)?.stop;
+		if (typeof stopOption === "string") {
+			rb.stop_sequences = [stopOption];
+		} else if (Array.isArray(stopOption)) {
+			const stops = stopOption.filter((s): s is string => typeof s === "string");
+			if (stops.length > 0) {
+				rb.stop_sequences = stops;
+			}
+		}
+
 		// Add thinking mode (Anthropic-compatible format).
-		// Models whose schema rejects the `thinking` field entirely
-		// (supportsThinkingParam=false) must not receive it: thinking is
-		// mandatory there and only controllable through `reasoning_effort`.
-		Object.assign(rb, buildAnthropicThinkingConfig(um));
+		// The budget must stay below `max_tokens`, so it is clamped against the
+		// value set above (or the API default when the model declares none).
+		Object.assign(rb, buildAnthropicThinkingConfig(um, rb.max_tokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS));
 
 		// Add tools configuration
 		const toolConfig = convertToolsToOpenAI(options);
-		const anthropicToolList: Array<{ name: string; description?: string; input_schema?: object }> = [];
+		const anthropicToolList: Array<{
+			name: string;
+			description?: string;
+			input_schema?: object;
+		}> = [];
 		if (toolConfig.tools) {
 			for (const tool of toolConfig.tools) {
 				anthropicToolList.push({
@@ -470,14 +535,18 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		}
 		// Inject ask_image + ask_with_multi_image for non-vision models with stored images
 		if (this._hasImages) {
-			const imgDef = ASK_IMAGE_TOOL_DEF as unknown as { function: { name: string; description: string; parameters: object } };
+			const imgDef = ASK_IMAGE_TOOL_DEF as unknown as {
+				function: { name: string; description: string; parameters: object };
+			};
 			anthropicToolList.push({
 				name: imgDef.function.name,
 				description: imgDef.function.description,
 				input_schema: imgDef.function.parameters,
 			});
 			if (this._localImages.length >= 2) {
-				const multiDef = ASK_WITH_MULTI_IMAGE_TOOL_DEF as unknown as { function: { name: string; description: string; parameters: object } };
+				const multiDef = ASK_WITH_MULTI_IMAGE_TOOL_DEF as unknown as {
+					function: { name: string; description: string; parameters: object };
+				};
 				anthropicToolList.push({
 					name: multiDef.function.name,
 					description: multiDef.function.description,
@@ -507,9 +576,19 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 
 		// Process extra configuration parameters (filter reserved keys with warning)
 		const ANTHROPIC_RESERVED_EXTRA_KEYS = new Set([
-			"model", "messages", "stream", "max_tokens", "system",
-			"temperature", "top_p", "top_k", "tools", "tool_choice",
-			"thinking", "output_config", "stop_sequences",
+			"model",
+			"messages",
+			"stream",
+			"max_tokens",
+			"system",
+			"temperature",
+			"top_p",
+			"top_k",
+			"tools",
+			"tool_choice",
+			"thinking",
+			"output_config",
+			"stop_sequences",
 		]);
 		if (um?.extra && typeof um.extra === "object") {
 			for (const [key, value] of Object.entries(um.extra)) {
@@ -551,7 +630,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		// Immediately cancel the stream when user cancels, so reader.read() won't stay pending
 		if (token.onCancellationRequested) {
 			cancelDisposable = token.onCancellationRequested(() => {
-				reader.cancel().catch(() => { });
+				reader.cancel().catch(() => {});
 			});
 		}
 
@@ -601,7 +680,10 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			logger.debug("anthropic.stream.done", { modelId });
 		} catch (e) {
 			console.error("[Anthropic Provider] Streaming response error:", e);
-			logger.error("anthropic.stream.error", { modelId, error: e instanceof Error ? e.message : String(e) });
+			logger.error("anthropic.stream.error", {
+				modelId,
+				error: e instanceof Error ? e.message : String(e),
+			});
 			throw e;
 		} finally {
 			cancelDisposable?.dispose();
@@ -624,31 +706,45 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			return;
 		}
 
-		// Handle error events
+		// Handle error events. After a stream has started the HTTP status is
+		// already 200, so this is the only place a failure is reported; without
+		// throwing, the answer would just stop mid-sentence.
 		if (chunk.type === "error") {
-			const errorType = chunk.error?.type || "unknown_error";
-			const errorMessage = chunk.error?.message || "Anthropic API streaming error";
-			console.error(`[Anthropic Provider] Streaming error: ${errorType} - ${errorMessage}`);
-			return;
+			throw createStreamError(chunk.error);
 		}
 
 		if (chunk.type === "message_start" && chunk.message) {
-			// Extract message metadata (id, model, etc.) and input token count
-			const msg = chunk.message as Record<string, unknown>;
-			const usage = msg.usage as { input_tokens?: number } | undefined;
-			if (usage?.input_tokens) {
-				this._anthropicInputTokens = usage.input_tokens;
+			// message_start carries the input side of the usage. On Messages,
+			// `input_tokens` excludes the cached tokens, so the whole prompt is the
+			// sum of the three fields.
+			const usage = chunk.message.usage;
+			if (usage) {
+				this._anthropicInputTokens = usage.input_tokens ?? 0;
+				this._anthropicCacheReadTokens = usage.cache_read_input_tokens ?? 0;
+				this._anthropicCacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
 			}
 			return;
 		}
 
 		if (chunk.type === "message_delta" && chunk.delta) {
-			// Extract stop_reason and usage information
-			const chunkUsage = chunk.usage as { output_tokens?: number } | undefined;
-			if (chunkUsage?.output_tokens && this._anthropicInputTokens > 0) {
+			if (chunk.delta.stop_reason === "max_tokens") {
+				this._responseTruncated = true;
+			}
+			// message_delta closes the message with the output side of the usage.
+			const outputTokens = chunk.usage?.output_tokens;
+			if (outputTokens !== undefined) {
+				const cacheHitTokens = this._anthropicCacheReadTokens;
+				// A cache write is input handled outside the prompt, so it counts
+				// as neither a hit nor a re-billed miss.
+				const cacheMissTokens =
+					this._anthropicInputTokens === 0 && cacheHitTokens === 0
+						? undefined
+						: Math.max(0, this._anthropicInputTokens - cacheHitTokens);
 				this._onUsage?.({
-					promptTokens: this._anthropicInputTokens,
-					completionTokens: chunkUsage.output_tokens,
+					promptTokens: this._anthropicInputTokens + cacheHitTokens + this._anthropicCacheCreationTokens,
+					completionTokens: outputTokens,
+					cacheHitTokens: cacheHitTokens > 0 ? cacheHitTokens : undefined,
+					cacheMissTokens,
 				});
 			}
 			return;
@@ -724,7 +820,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 	 * Create a non-streaming chat message (for Git commit generation).
 	 */
 	async *createMessage(
-		model: OpenCodeGoModelItem,
+		model: KenariModelItem,
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
@@ -762,7 +858,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 
 		if (!response.ok) {
 			const errorText = await response.text();
-			throw new Error(`Anthropic API request failed: [${response.status}] ${response.statusText}\n${errorText}`);
+			throw createApiError(response, errorText, "Anthropic Messages API error", url);
 		}
 
 		if (!response.body) {
@@ -777,7 +873,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		// Cancel the reader immediately when abort signal fires
 		if (signal) {
 			signal.addEventListener("abort", () => {
-				reader.cancel().catch(() => { });
+				reader.cancel().catch(() => {});
 			});
 		}
 
@@ -797,22 +893,27 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 					const data = line.slice(5).trim();
 					if (data === "[DONE]") continue;
 
+					// A malformed chunk is skipped; a stream error must propagate.
+					let chunk: AnthropicStreamChunk;
 					try {
-						const chunk: AnthropicStreamChunk = JSON.parse(data);
-
-						if (chunk.type === "content_block_delta" && chunk.delta?.type === "text_delta" && chunk.delta?.text) {
-							yield { type: "text", text: chunk.delta.text };
-						}
-
-						if (chunk.type === "message_stop") break;
-
-						if (chunk.type === "error") {
-							const errorType = chunk.error?.type || "unknown_error";
-							const errorMessage = chunk.error?.message || "Anthropic API streaming error";
-							console.error(`[Anthropic Provider] Streaming error: ${errorType} - ${errorMessage}`);
-						}
+						chunk = JSON.parse(data) as AnthropicStreamChunk;
 					} catch (e) {
 						console.error("[Anthropic Provider] Failed to parse SSE chunk:", e, "data:", data);
+						continue;
+					}
+
+					if (chunk.type === "error") {
+						throw createStreamError(chunk.error);
+					}
+
+					if (chunk.type === "message_stop") break;
+
+					if (
+						chunk.type === "content_block_delta" &&
+						chunk.delta?.type === "text_delta" &&
+						chunk.delta?.text
+					) {
+						yield { type: "text", text: chunk.delta.text };
 					}
 				}
 			}

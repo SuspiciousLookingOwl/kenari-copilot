@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 // Verifies AnthropicApi.convertMessages() merges consecutive tool-result-only
-// user messages into a single user message (Anthropic protocol requirement —
+// user messages into a single user message (Anthropic protocol requirement -
 // issue #87: "tool_use ids were found without tool_result blocks immediately
 // after" 400 errors when a previous turn issued multiple parallel tool calls).
 
@@ -111,24 +111,16 @@ try {
 	});
 
 	// system is extracted to _systemContent, so only 4 messages remain
-	assert.equal(
-		out.length,
-		4,
-		"expect 4 messages: user, assistant, merged user, user",
-	);
+	assert.equal(out.length, 4, "expect 4 messages: user, assistant, merged user, user");
 	assert.equal(out[0].role, "user");
 	assert.equal(out[1].role, "assistant");
 	assert.equal(out[1].content.length, 4, "text + 3 tool_use (unsigned thinking dropped)");
-	assert.equal(
-		out[2].role,
-		"user",
-		"tool results merged into a single user message",
-	);
+	assert.equal(out[2].role, "user", "tool results merged into a single user message");
 	const trs = out[2].content;
 	assert.equal(trs.length, 3, "3 tool_result blocks in one user message");
 	assert.deepEqual(
 		trs.map((t) => t.tool_use_id),
-		["call_1", "call_2", "call_3"],
+		["call_1", "call_2", "call_3"]
 	);
 	assert.ok(trs.every((t) => t.type === "tool_result"));
 	assert.equal(out[3].role, "user");
@@ -143,7 +135,7 @@ try {
 			},
 			{ role: 1, content: [new ToolResultPart("call_x", "result")] },
 		],
-		{ includeReasoningInRequest: true, vision: false },
+		{ includeReasoningInRequest: true, vision: false }
 	);
 	assert.equal(single.length, 2);
 	assert.equal(single[1].role, "user");
@@ -159,13 +151,10 @@ try {
 			},
 			{
 				role: 1,
-				content: [
-					new TextPart("keep going"),
-					new ToolResultPart("call_y", "result"),
-				],
+				content: [new TextPart("keep going"), new ToolResultPart("call_y", "result")],
 			},
 		],
-		{ includeReasoningInRequest: true, vision: false },
+		{ includeReasoningInRequest: true, vision: false }
 	);
 	assert.equal(mixed.length, 2);
 	assert.equal(mixed[1].content.length, 2);

@@ -24,7 +24,11 @@ function downloadFile(url, dest) {
 				});
 			})
 			.on("error", (err) => {
-				try { fs.unlinkSync(dest); } catch { /* ignore */ }
+				try {
+					fs.unlinkSync(dest);
+				} catch {
+					/* ignore */
+				}
 				reject(err);
 			});
 	});
@@ -39,21 +43,21 @@ async function ensureTokenizerFile() {
 	}
 
 	if (fs.existsSync(destFile)) {
-		console.log("[opencode-go-copilot] Tokenizer file already exists at:", destFile);
+		console.log("[kenari-copilot] Tokenizer file already exists at:", destFile);
 		return;
 	}
 
-	console.log("[opencode-go-copilot] Downloading tokenizer file from:", TOKENIZER_URL);
+	console.log("[kenari-copilot] Downloading tokenizer file from:", TOKENIZER_URL);
 	try {
 		await downloadFile(TOKENIZER_URL, destFile);
-		console.log("[opencode-go-copilot] Tokenizer file downloaded to:", destFile);
+		console.log("[kenari-copilot] Tokenizer file downloaded to:", destFile);
 	} catch (err) {
-		console.warn("[opencode-go-copilot] Failed to download tokenizer file:", err.message);
-		console.warn("[opencode-go-copilot] Token counting will fall back to estimation.");
+		console.warn("[kenari-copilot] Failed to download tokenizer file:", err.message);
+		console.warn("[kenari-copilot] Token counting will fall back to estimation.");
 	}
 }
 
 ensureTokenizerFile().catch((err) => {
-	console.warn("[opencode-go-copilot] Tokenizer setup failed:", err.message);
-	console.warn("[opencode-go-copilot] Token counting will fall back to estimation.");
+	console.warn("[kenari-copilot] Tokenizer setup failed:", err.message);
+	console.warn("[kenari-copilot] Token counting will fall back to estimation.");
 });

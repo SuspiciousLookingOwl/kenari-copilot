@@ -1,367 +1,384 @@
 /**
- * Unified model resolution layer.
+ * Unified model resolution layer for the Kenari catalog.
  *
- * Every model flows through the same two-layer merge chain:
- *
- *   1. resolveFromCatalog() — models.dev catalog
- *      (provider entry → global entry → conservative defaults, per field)
- *   2. applyOverride()      — MODEL_OVERRIDES[modelId] wins per field when present
+ * Each model is resolved in two steps: the `/v1/models` entry (with defaults
+ * for missing fields), then `MODEL_OVERRIDES[modelId]` on top.
  */
 
 import type { LanguageModelChatInformation } from "vscode";
-import type { ApiMode, OpenCodeGoModelItem } from "./types";
+import type { ApiMode, KenariModelItem } from "./types";
 import { l10n } from "./localize";
 import { MODEL_OVERRIDES, type ModelMetaOverride } from "./modelOverrides";
-import {
-    deduceApiModeFromCatalog,
-    ensureModelsDevLoaded,
-    getCatalogProvider,
-    getCatalogProviderBaseUrl,
-    getCatalogProviderModelEntry,
-    getCatalogProviderModelIds,
-    inferDefaultReasoningEffort,
-    inferReasoningEfforts,
-    inferSupportsDisablingReasoning,
-    inferThinkingBudget,
-    inferThinkingMode,
-    inferVision,
-    lookupModelDevEntry,
-    type ModelsDevEntry,
-} from "./modelsDev";
-
-/**
- * Supported provider IDs. Only OpenCode Go remains: the OpenCode Zen free
- * tier rejects requests originating outside OpenCode with a 403 FreeTierError.
- */
-export type ProviderId = "opencode-go";
-
-/** Fallback base URL used when the catalog is not loaded. */
-const FALLBACK_BASE_URLS: Record<ProviderId, string> = {
-    "opencode-go": "https://opencode.ai/zen/go/v1/",
-};
-
-/** Provider display metadata (family grouping, picker detail text). */
-const PROVIDER_LABELS: Record<ProviderId, { family: string; detail: string }> = {
-    "opencode-go": { family: "OpenCodeGo", detail: "OpenCode Go" },
-};
+import { getCatalogModel, KENARI_BASE_URL, type CatalogModel } from "./modelCatalog";
 
 const DEFAULT_CONTEXT_LENGTH = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
+const MIN_INPUT_BUDGET = 1024;
+
+/**
+ * Derive the input budget from the context window and the output limit.
+ *
+ * Follows VS Code's own convention (`contextWindow - maxOutputTokens`), the
+ * same arithmetic the built-in providers use. VS Code shows "Context Size" as
+ * `maxInputTokens + maxOutputTokens`, so this keeps the picker showing the real
+ * window instead of the sum of both limits.
+ */
+function deriveMaxInputTokens(contextWindow: number, maxOutputTokens: number): number {
+	return Math.max(MIN_INPUT_BUDGET, contextWindow - maxOutputTokens);
+}
+
+/**
+ * Cap on the output tokens requested per call.
+ *
+ * `max_output_tokens` is the model's capability, which for several models sits
+ * just below its whole context window. Kenari reserves balance for the worst
+ * case before each request (input + `max_tokens` at the output price), so
+ * sending that capability would reserve the price of a full-length answer on
+ * every call and could fail with `insufficient_balance`. Kenari also silently
+ * lowers `max_tokens` when the balance cannot cover it, causing early cut-offs.
+ *
+ * The capability is still declared to VS Code, and the upstream limit still
+ * applies; this only bounds what one request asks for.
+ */
+const MAX_REQUESTED_OUTPUT_TOKENS = 32768;
 
 /**
  * Resolved model metadata. Every field that the catalog can supply has a
  * conservative default, so the object is always complete.
  */
 export interface ModelMeta {
-    displayName: string;
-    vision: boolean;
-    reasoning: boolean;
-    /** Whether the model declares an explicit off value for reasoning effort (used by the Responses adapter). */
-    supportsDisablingReasoning: boolean;
-    thinkingMode: "switchable" | "always" | "adaptive";
-    supportedReasoningEfforts: string[];
-    defaultReasoningEffort: string;
-    contextLength: number;
-    maxOutputTokens: number;
-    apiMode: ApiMode;
-    supportsTemperature: boolean;
-    /** Whether the Chat Completions request body may include a top-level `thinking` field. */
-    supportsThinkingParam: boolean;
-    toolCalling: boolean;
-    baseUrl: string;
-    thinkingBudget?: { min?: number; max?: number };
-    status?: string;
-    cost: { cache_read: number; input: number; output: number };
+	displayName: string;
+	vision: boolean;
+	reasoning: boolean;
+	/** Whether the model can be told explicitly to skip reasoning. */
+	supportsDisablingReasoning: boolean;
+	thinkingMode: "switchable" | "always" | "adaptive";
+	supportedReasoningEfforts: string[];
+	defaultReasoningEffort: string;
+	/** Full context window (input + output), as declared by the catalog. */
+	contextWindow: number;
+	/**
+	 * Input budget handed to VS Code: the context window minus the output
+	 * limit (see {@link deriveMaxInputTokens}).
+	 */
+	maxInputTokens: number;
+	/** Longest output the model can produce in one response. */
+	maxOutputTokens: number;
+	apiMode: ApiMode;
+	supportsTemperature: boolean;
+	toolCalling: boolean;
+	baseUrl: string;
+	/** True for `:free` models, which cost nothing to call. */
+	free: boolean;
+	cost: { cache_read: number; input: number; output: number };
+}
+
+/**
+ * Pick the request protocol for a model.
+ *
+ * Kenari serves every chat model through all protocols it lists; OpenAI Chat
+ * Completions is the most compatible default. Only when a model does not list
+ * it do the Responses or Anthropic formats get used.
+ */
+function deduceApiMode(entry: CatalogModel | undefined): ApiMode {
+	const protocols = Array.isArray(entry?.protocols) ? entry.protocols : [];
+	if (protocols.length === 0) {
+		return "openai";
+	}
+	if (protocols.includes("openai-chat")) {
+		return "openai";
+	}
+	if (protocols.includes("openai-responses")) {
+		return "openai-responses";
+	}
+	if (protocols.includes("anthropic-messages")) {
+		return "anthropic";
+	}
+	return "openai";
+}
+
+/**
+ * Pick the default reasoning effort for a model.
+ *
+ * Prefers "medium" (the natural middle level), otherwise the middle of the
+ * declared list. Models without levels default to plain "enabled".
+ */
+function chooseDefaultEffort(efforts: string[]): string {
+	if (efforts.length === 0) {
+		return "enabled";
+	}
+	if (efforts.includes("medium")) {
+		return "medium";
+	}
+	return efforts[Math.min(efforts.length - 1, Math.floor(efforts.length / 2))];
 }
 
 /**
  * Resolve model metadata from the catalog with conservative defaults.
- * Per field: provider-specific entry → global entry → default.
  */
-function resolveFromCatalog(providerId: ProviderId, modelId: string): ModelMeta {
-    const providerEntry = getCatalogProviderModelEntry(providerId, modelId);
-    const globalEntry = lookupModelDevEntry(modelId);
-    const entry: ModelsDevEntry | undefined = providerEntry ?? globalEntry;
-    const providerNpm = getCatalogProvider(providerId)?.npm;
-    const adapterNpm = providerEntry?.provider?.npm ?? providerNpm;
+function resolveFromCatalog(modelId: string): ModelMeta {
+	const entry = getCatalogModel(modelId);
+	const reasoning = entry?.reasoning === true;
+	// "none" is a valid but hidden effort level: it maps to the "disabled"
+	// picker option instead of being listed separately.
+	const supportedReasoningEfforts = (entry?.reasoning_options ?? []).filter(
+		(level): level is string => typeof level === "string" && level !== "none" && level !== "disabled"
+	);
+	const toggle = entry?.reasoning_toggle === true;
 
-    const thinkingMode = entry ? inferThinkingMode(entry) : "switchable";
-    const rawEfforts = entry ? inferReasoningEfforts(entry) : undefined;
-    // Normalize: "none"/"disabled" effort values are represented by the "disabled" picker option
-    const supportedReasoningEfforts = (rawEfforts ?? []).filter((e) => e !== "none" && e !== "disabled");
+	let thinkingMode: ModelMeta["thinkingMode"];
+	if (supportedReasoningEfforts.length > 0 || toggle) {
+		thinkingMode = "switchable";
+	} else {
+		thinkingMode = "always";
+	}
+	// The model can skip reasoning when it exposes an explicit off switch:
+	// a per-request toggle, or a "none" effort level.
+	const supportsDisablingReasoning =
+		thinkingMode === "switchable" && (toggle || (entry?.reasoning_options ?? []).includes("none"));
 
-    return {
-        displayName: entry?.name ?? modelId,
-        vision: entry ? inferVision(entry) : false,
-        reasoning: entry?.reasoning ?? false,
-        supportsDisablingReasoning: entry ? inferSupportsDisablingReasoning(entry) : true,
-        thinkingMode,
-        supportedReasoningEfforts,
-        defaultReasoningEffort: entry ? inferDefaultReasoningEffort(entry) : "enabled",
-        contextLength: entry?.limit?.context ?? DEFAULT_CONTEXT_LENGTH,
-        maxOutputTokens: entry?.limit?.output ?? DEFAULT_MAX_TOKENS,
-        apiMode: deduceApiModeFromCatalog(modelId, adapterNpm, entry),
-        supportsTemperature: entry?.temperature ?? true,
-        supportsThinkingParam: true,
-        toolCalling: entry?.tool_call ?? true,
-        baseUrl: getCatalogProviderBaseUrl(providerId, FALLBACK_BASE_URLS[providerId]),
-        thinkingBudget: entry ? inferThinkingBudget(entry) : undefined,
-        status: entry?.status,
-        cost: entry?.cost ?? { cache_read: 0, input: 0, output: 0 },
-    };
+	const inputModalities = entry?.modalities?.input ?? [];
+	const pricing = entry?.pricing;
+	const contextWindow = entry?.context_length ?? DEFAULT_CONTEXT_LENGTH;
+	const maxOutputTokens = entry?.max_output_tokens ?? DEFAULT_MAX_TOKENS;
+
+	return {
+		displayName: entry?.name ?? modelId,
+		vision: inputModalities.includes("image"),
+		reasoning,
+		supportsDisablingReasoning,
+		thinkingMode,
+		supportedReasoningEfforts,
+		defaultReasoningEffort: reasoning ? chooseDefaultEffort(supportedReasoningEfforts) : "enabled",
+		contextWindow,
+		maxInputTokens: deriveMaxInputTokens(contextWindow, maxOutputTokens),
+		maxOutputTokens,
+		apiMode: deduceApiMode(entry),
+		supportsTemperature: true,
+		toolCalling: entry?.tool_call ?? true,
+		baseUrl: KENARI_BASE_URL,
+		free: pricing?.free === true || modelId.endsWith(":free"),
+		cost: {
+			cache_read: pricing?.cache_read ?? 0,
+			input: pricing?.input ?? 0,
+			output: pricing?.output ?? 0,
+		},
+	};
 }
 
 /**
  * Apply per-model overrides. Override wins per field when present.
  */
 function applyOverride(meta: ModelMeta, override?: ModelMetaOverride): ModelMeta {
-    if (!override) return meta;
-    return {
-        displayName: override.displayName ?? meta.displayName,
-        vision: override.vision ?? meta.vision,
-        reasoning: meta.reasoning,
-        supportsDisablingReasoning: override.supportsDisablingReasoning ?? meta.supportsDisablingReasoning,
-        thinkingMode: override.thinkingMode ?? meta.thinkingMode,
-        supportedReasoningEfforts: override.supportedReasoningEfforts ?? meta.supportedReasoningEfforts,
-        defaultReasoningEffort: override.defaultReasoningEffort ?? meta.defaultReasoningEffort,
-        contextLength: override.contextLength ?? meta.contextLength,
-        maxOutputTokens: override.maxOutputTokens ?? meta.maxOutputTokens,
-        apiMode: override.apiMode ?? meta.apiMode,
-        supportsTemperature: override.supportsTemperature ?? meta.supportsTemperature,
-        supportsThinkingParam: override.supportsThinkingParam ?? meta.supportsThinkingParam,
-        toolCalling: override.toolCalling ?? meta.toolCalling,
-        baseUrl: override.baseUrl ?? meta.baseUrl,
-        thinkingBudget: override.thinkingBudget ?? meta.thinkingBudget,
-        status: override.status ?? meta.status,
-        cost: override.cost ?? meta.cost,
-    };
+	if (!override) return meta;
+	const contextWindow = override.contextWindow ?? meta.contextWindow;
+	const maxOutputTokens = override.maxOutputTokens ?? meta.maxOutputTokens;
+	return {
+		displayName: override.displayName ?? meta.displayName,
+		vision: override.vision ?? meta.vision,
+		reasoning: meta.reasoning,
+		supportsDisablingReasoning: override.supportsDisablingReasoning ?? meta.supportsDisablingReasoning,
+		thinkingMode: override.thinkingMode ?? meta.thinkingMode,
+		supportedReasoningEfforts: override.supportedReasoningEfforts ?? meta.supportedReasoningEfforts,
+		defaultReasoningEffort: override.defaultReasoningEffort ?? meta.defaultReasoningEffort,
+		contextWindow,
+		// Re-derived so an override of either limit keeps the pair consistent.
+		maxInputTokens: deriveMaxInputTokens(contextWindow, maxOutputTokens),
+		maxOutputTokens,
+		apiMode: override.apiMode ?? meta.apiMode,
+		supportsTemperature: override.supportsTemperature ?? meta.supportsTemperature,
+		toolCalling: override.toolCalling ?? meta.toolCalling,
+		baseUrl: override.baseUrl ?? meta.baseUrl,
+		free: meta.free,
+		cost: override.cost ?? meta.cost,
+	};
 }
 
 /**
  * Resolve the final metadata for a model through the merge chain.
  */
-export function resolveModelMeta(providerId: ProviderId, modelId: string): ModelMeta {
-    return applyOverride(resolveFromCatalog(providerId, modelId), MODEL_OVERRIDES[modelId]);
+export function resolveModelMeta(modelId: string): ModelMeta {
+	return applyOverride(resolveFromCatalog(modelId), MODEL_OVERRIDES[modelId]);
 }
 
 /**
  * Build the reasoning effort enum (values/labels/descriptions/default) for a model.
  */
 function buildReasoningEnum(meta: ModelMeta): {
-    enumValues: string[];
-    enumItemLabels: string[];
-    enumDescriptions: string[];
-    defaultEffort: string;
+	enumValues: string[];
+	enumItemLabels: string[];
+	enumDescriptions: string[];
+	defaultEffort: string;
 } {
-    const hasEfforts = meta.supportedReasoningEfforts.length > 0;
-    // A model whose schema rejects the `thinking` field entirely has no off
-    // switch either (e.g. glm-5.3/glm-5.3-flash on OpenCode Go) — hide the
-    // "disabled" option. A Responses-native model that does not declare an off
-    // effort value cannot accept `reasoning.effort: "none"` for the same
-    // reason. Other protocols disable thinking via
-    // `thinking: { type: "disabled" }` regardless of the effort list, so they
-    // keep the "disabled" option.
-    const canShowDisabled =
-        meta.supportsThinkingParam !== false &&
-        (meta.apiMode !== "openai-responses" || meta.supportsDisablingReasoning !== false);
-    let enumValues: string[];
-    if (hasEfforts) {
-        if (meta.thinkingMode === "switchable") {
-            enumValues = canShowDisabled
-                ? ["disabled", ...meta.supportedReasoningEfforts]
-                : [...meta.supportedReasoningEfforts];
-        } else {
-            enumValues = [...meta.supportedReasoningEfforts];
-        }
-    } else {
-        if (meta.thinkingMode === "switchable") {
-            enumValues = ["disabled", "enabled"];
-        } else if (meta.thinkingMode === "adaptive") {
-            enumValues = ["disabled", "adaptive"];
-        } else {
-            enumValues = ["enabled"];
-        }
-    }
+	const hasEfforts = meta.supportedReasoningEfforts.length > 0;
+	// The "disabled" option is offered only when the model actually accepts an
+	// explicit off switch (a per-request toggle or a "none" effort level).
+	const canShowDisabled = meta.reasoning && meta.supportsDisablingReasoning && meta.thinkingMode === "switchable";
+	let enumValues: string[];
+	if (hasEfforts) {
+		enumValues = canShowDisabled
+			? ["disabled", ...meta.supportedReasoningEfforts]
+			: [...meta.supportedReasoningEfforts];
+	} else if (meta.thinkingMode === "switchable") {
+		enumValues = ["disabled", "enabled"];
+	} else {
+		enumValues = ["enabled"];
+	}
 
-    // Fall back to the last enum value when the requested default is not selectable
-    // (e.g. "enabled" for an adaptive model).
-    const defaultEffort = enumValues.includes(meta.defaultReasoningEffort)
-        ? meta.defaultReasoningEffort
-        : enumValues[enumValues.length - 1];
+	// Fall back to the last enum value when the requested default is not selectable.
+	const defaultEffort = enumValues.includes(meta.defaultReasoningEffort)
+		? meta.defaultReasoningEffort
+		: enumValues[enumValues.length - 1];
 
-    const getLabel = (e: string): string => {
-        switch (e) {
-            case 'disabled': return l10n("Disabled");
-            case 'adaptive': return l10n("Adaptive");
-            case 'enabled': return l10n("Thinking");
-            case 'low': return l10n("Low");
-            case 'medium': return l10n("Medium");
-            case 'high': return l10n("High");
-            case 'xhigh': return l10n("Extra High");
-            case 'max': return l10n("Maximum");
-            default: return e.charAt(0).toUpperCase() + e.slice(1);
-        }
-    };
-    const getDesc = (e: string): string => {
-        switch (e) {
-            case 'disabled': return l10n("Do not enable thinking");
-            case 'adaptive': return l10n("Automatically decide when to think");
-            case 'enabled': return l10n("Enable thinking");
-            case 'low': return l10n("Reduce thinking, faster response");
-            case 'medium': return l10n("Balance thinking and speed");
-            case 'high': return l10n("Deeper thinking, slower response");
-            case 'xhigh': return l10n("Very deep thinking, slower response");
-            case 'max': return l10n("Maximum thinking depth, slowest response");
-            default: return e;
-        }
-    };
+	const getLabel = (e: string): string => {
+		switch (e) {
+			case "disabled":
+				return l10n("Disabled");
+			case "adaptive":
+				return l10n("Adaptive");
+			case "enabled":
+				return l10n("Thinking");
+			case "minimal":
+				return l10n("Minimal");
+			case "low":
+				return l10n("Low");
+			case "medium":
+				return l10n("Medium");
+			case "high":
+				return l10n("High");
+			case "xhigh":
+				return l10n("Extra High");
+			case "max":
+				return l10n("Maximum");
+			default:
+				return e.charAt(0).toUpperCase() + e.slice(1);
+		}
+	};
+	const getDesc = (e: string): string => {
+		switch (e) {
+			case "disabled":
+				return l10n("Do not enable thinking");
+			case "adaptive":
+				return l10n("Automatically decide when to think");
+			case "enabled":
+				return l10n("Enable thinking");
+			case "minimal":
+				return l10n("Barely any thinking, fastest response");
+			case "low":
+				return l10n("Reduce thinking, faster response");
+			case "medium":
+				return l10n("Balance thinking and speed");
+			case "high":
+				return l10n("Deeper thinking, slower response");
+			case "xhigh":
+				return l10n("Very deep thinking, slower response");
+			case "max":
+				return l10n("Maximum thinking depth, slowest response");
+			default:
+				return e;
+		}
+	};
 
-    return {
-        enumValues,
-        enumItemLabels: enumValues.map(getLabel),
-        enumDescriptions: enumValues.map(getDesc),
-        defaultEffort,
-    };
+	return {
+		enumValues,
+		enumItemLabels: enumValues.map(getLabel),
+		enumDescriptions: enumValues.map(getDesc),
+		defaultEffort,
+	};
 }
 
 /**
- * Special vision proxy model ID that resolves to the newest qwen*-plus model.
+ * Resolve the vision proxy model ID used by the ask_image tool.
+ * The configured value is a Kenari model ID and is returned unchanged.
  */
-export const VISION_PROXY_LATEST_ALIAS = "qwen-plus-latest";
-
-/**
- * Compare two model versions numerically (e.g. "3.10" > "3.9").
- */
-function compareVersions(a: string, b: string): number {
-    const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
-    const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
-    const len = Math.max(pa.length, pb.length);
-    for (let i = 0; i < len; i++) {
-        const va = pa[i] ?? 0;
-        const vb = pb[i] ?? 0;
-        if (va !== vb) return va - vb;
-    }
-    return 0;
-}
-
-/**
- * Resolve the vision proxy model ID.
- *
- * The special value "qwen-plus-latest" (the default) resolves to the newest
- * qwen*-plus model served by the opencode-go provider in the catalog
- * (e.g. qwen3.8-plus over qwen3.7-plus). Any other value is returned unchanged.
- * Falls back to the alias itself when the catalog has no qwen*-plus model.
- */
-export async function resolveVisionProxyModelId(configuredId: string): Promise<string> {
-    if (configuredId !== VISION_PROXY_LATEST_ALIAS) {
-        return configuredId;
-    }
-    try {
-        await ensureModelsDevLoaded();
-        const ids = getCatalogProviderModelIds("opencode-go");
-        const plusModels = ids
-            .filter((id) => /^qwen[\d.]*-plus$/.test(id))
-            .filter((id) => !isModelDeprecated("opencode-go", id))
-            .sort((a, b) => {
-                const va = (a.match(/^qwen([\d.]+)-plus$/) ?? [])[1] ?? "";
-                const vb = (b.match(/^qwen([\d.]+)-plus$/) ?? [])[1] ?? "";
-                return compareVersions(vb, va);
-            });
-        return plusModels[0] ?? VISION_PROXY_LATEST_ALIAS;
-    } catch {
-        return VISION_PROXY_LATEST_ALIAS;
-    }
-}
-
-/**
- * Check whether a model is marked as deprecated in the catalog.
- * Deprecated models are hidden from the model picker unless the user opts in.
- */
-export function isModelDeprecated(providerId: ProviderId, modelId: string): boolean {
-    return resolveModelMeta(providerId, modelId).status === "deprecated";
+export function resolveVisionProxyModelId(configuredId: string): string {
+	return configuredId.trim();
 }
 
 /**
  * Build a LanguageModelChatInformation entry (model picker) for a model.
  */
-export function buildCatalogModelInfo(providerId: ProviderId, modelId: string): LanguageModelChatInformation {
-    const meta = resolveModelMeta(providerId, modelId);
-    const label = PROVIDER_LABELS[providerId];
-    // Deprecated models keep a visible marker when shown (opt-in setting)
-    const deprecatedPrefix = meta.status === "deprecated" ? l10n("[Depr] ") : "";
-    const name = `${deprecatedPrefix}${meta.displayName}`;
-    const tooltip = label.detail;
-    const { enumValues, enumItemLabels, enumDescriptions, defaultEffort } = buildReasoningEnum(meta);
+export function buildModelInfo(modelId: string): LanguageModelChatInformation {
+	const meta = resolveModelMeta(modelId);
+	const detail = meta.free ? "Kenari \u00b7 Free" : "Kenari";
 
-    return {
-        id: modelId,
-        name,
-        detail: label.detail,
-        tooltip,
-        family: label.family,
-        version: "1.0.0",
-        maxInputTokens: meta.contextLength,
-        maxOutputTokens: meta.maxOutputTokens,
-        isUserSelectable: true,
-        capabilities: {
-            toolCalling: meta.toolCalling,
-            // Always declare imageInput=true so VS Code passes image data through.
-            // Non-vision models handle images via the ask_image tool proxy internally.
-            imageInput: true,
-        },
-        configurationSchema: {
-            properties: {
-                reasoningEffort: {
-                    type: "string",
-                    title: l10n("Reasoning Effort"),
-                    enum: enumValues,
-                    enumItemLabels: enumItemLabels,
-                    enumDescriptions: enumDescriptions,
-                    default: defaultEffort,
-                    group: "navigation",
-                },
-            },
-        },
-    } satisfies LanguageModelChatInformation;
+	// Only models that actually reason get the reasoning effort selector.
+	let configurationSchema: LanguageModelChatInformation["configurationSchema"];
+	if (meta.reasoning) {
+		const { enumValues, enumItemLabels, enumDescriptions, defaultEffort } = buildReasoningEnum(meta);
+		configurationSchema = {
+			properties: {
+				reasoningEffort: {
+					type: "string",
+					title: l10n("Reasoning Effort"),
+					enum: enumValues,
+					enumItemLabels: enumItemLabels,
+					enumDescriptions: enumDescriptions,
+					default: defaultEffort,
+					group: "navigation",
+				},
+			},
+		};
+	}
+
+	const info: LanguageModelChatInformation = {
+		id: modelId,
+		name: meta.displayName,
+		detail,
+		tooltip: "Kenari",
+		family: "Kenari",
+		version: "1.0.0",
+		maxInputTokens: meta.maxInputTokens,
+		maxOutputTokens: meta.maxOutputTokens,
+		isUserSelectable: true,
+		capabilities: {
+			toolCalling: meta.toolCalling,
+			// Always declare imageInput=true so VS Code passes image data through.
+			// Non-vision models handle images via the ask_image tool proxy internally.
+			imageInput: true,
+		},
+		...(configurationSchema ? { configurationSchema } : {}),
+	};
+
+	return info;
 }
 
 /**
- * Build the OpenCodeGoModelItem request config for a model.
+ * Build the KenariModelItem request config for a model.
  */
-export function getCatalogModelConfig(modelId: string): OpenCodeGoModelItem {
-    const meta = resolveModelMeta("opencode-go", modelId);
-    const override = MODEL_OVERRIDES[modelId];
+export function getModelConfig(modelId: string): KenariModelItem {
+	const meta = resolveModelMeta(modelId);
+	const entry = getCatalogModel(modelId);
+	const override = MODEL_OVERRIDES[modelId];
 
-    const config: OpenCodeGoModelItem = {
-        id: modelId,
-        owned_by: "opencode",
-        displayName: meta.displayName,
-        baseUrl: meta.baseUrl,
-        vision: meta.vision,
-        supportsTemperature: meta.supportsTemperature,
-        supportsThinkingParam: meta.supportsThinkingParam,
-        context_length: meta.contextLength,
-        max_completion_tokens: meta.maxOutputTokens,
-        apiMode: meta.apiMode,
-        supportsReasoning: meta.reasoning,
-        supportsDisablingReasoning: meta.supportsDisablingReasoning,
-        enable_thinking: true,
-        include_reasoning_in_request: override?.includeReasoningInRequest ?? true,
-        thinkingMode: meta.thinkingMode,
-        cost: meta.cost,
-    };
+	const config: KenariModelItem = {
+		id: modelId,
+		owned_by: entry?.owned_by ?? "kenari",
+		displayName: meta.displayName,
+		baseUrl: meta.baseUrl,
+		vision: meta.vision,
+		supportsTemperature: meta.supportsTemperature,
+		context_length: meta.contextWindow,
+		max_completion_tokens: Math.min(meta.maxOutputTokens, MAX_REQUESTED_OUTPUT_TOKENS),
+		apiMode: meta.apiMode,
+		supportsReasoning: meta.reasoning,
+		supportsDisablingReasoning: meta.supportsDisablingReasoning,
+		include_reasoning_in_request: override?.includeReasoningInRequest ?? true,
+		thinkingMode: meta.thinkingMode,
+		cost: meta.cost,
+	};
 
-    // Only send an explicit effort when it is a real effort value
-    // ("enabled"/"adaptive" are handled via the thinking flags instead).
-    if (meta.defaultReasoningEffort && meta.defaultReasoningEffort !== "enabled" && meta.defaultReasoningEffort !== "adaptive") {
-        config.reasoning_effort = meta.defaultReasoningEffort;
-    }
-    if (meta.thinkingBudget?.max !== undefined) {
-        config.thinking_budget = meta.thinkingBudget.max;
-    }
-    if (override?.extra) {
-        config.extra = { ...override.extra };
-    }
+	// Only send an explicit effort when it is a real effort value
+	// ("enabled"/"adaptive" are handled via the on/off flags instead).
+	if (meta.reasoning && meta.defaultReasoningEffort !== "enabled" && meta.defaultReasoningEffort !== "adaptive") {
+		config.reasoning_effort = meta.defaultReasoningEffort;
+	}
+	if (override?.thinkingBudget?.max !== undefined) {
+		config.thinking_budget = override.thinkingBudget.max;
+	}
+	if (override?.extra) {
+		config.extra = { ...override.extra };
+	}
 
-    return config;
+	return config;
 }

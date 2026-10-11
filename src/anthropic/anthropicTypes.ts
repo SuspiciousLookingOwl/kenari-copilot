@@ -88,21 +88,18 @@ export interface AnthropicToolDefinition {
 }
 
 export type AnthropicToolChoice =
-	| { type: "auto" }
-	| { type: "any" }
-	| { type: "tool"; name: string }
-	| { type: "none" };
+	{ type: "auto" } | { type: "any" } | { type: "tool"; name: string } | { type: "none" };
 
 export interface AnthropicStreamChunk {
 	type:
-	| "message_start"
-	| "content_block_start"
-	| "content_block_delta"
-	| "content_block_stop"
-	| "message_delta"
-	| "message_stop"
-	| "ping"
-	| "error";
+		| "message_start"
+		| "content_block_start"
+		| "content_block_delta"
+		| "content_block_stop"
+		| "message_delta"
+		| "message_stop"
+		| "ping"
+		| "error";
 	index?: number;
 	message?: {
 		id: string;
@@ -112,6 +109,12 @@ export interface AnthropicStreamChunk {
 		model: string;
 		stop_reason?: string;
 		stop_sequence?: string;
+		usage?: {
+			input_tokens?: number;
+			output_tokens?: number;
+			cache_read_input_tokens?: number;
+			cache_creation_input_tokens?: number;
+		};
 	};
 	content_block?: {
 		type: "text" | "thinking" | "tool_use";
@@ -127,10 +130,12 @@ export interface AnthropicStreamChunk {
 		thinking?: string;
 		partial_json?: string;
 		signature?: string;
+		stop_reason?: string;
+		stop_sequence?: string;
 	};
 	usage?: {
-		input_tokens: number;
-		output_tokens: number;
+		input_tokens?: number;
+		output_tokens?: number;
 	};
 	error?: {
 		type: string;

@@ -1,451 +1,404 @@
 {
-	"name": "opencode-go-copilot-provider",
-	"publisher": "OnesoftQwQ",
-	"displayName": "OpenCode Go Provider for Copilot",
-	"description": "Integrate OpenCode Go models into GitHub Copilot Chat",
-	"icon": "assets/logo.png",
-	"keywords": [
-		"ai",
-		"chat",
-		"copilot",
-		"github-copilot",
-		"language-models",
-		"llm",
-		"opencode",
-		"openai-compatible",
-		"thinking",
-		"git-commit"
-	],
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/OnesoftQwQ/opencode-go-copilot"
-	},
-	"homepage": "https://github.com/OnesoftQwQ/opencode-go-copilot",
-	"bugs": {
-		"url": "https://github.com/OnesoftQwQ/opencode-go-copilot/issues"
-	},
-	"version": "1.12.2",
-	"engines": {
-		"vscode": "^1.116.0"
-	},
-	"categories": [
-		"AI",
-		"Chat"
-	],
-	"license": "MIT",
-	"activationEvents": [
-		"onStartupFinished"
-	],
-	"contributes": {
-		"languageModelChatProviders": [
-			{
-				"vendor": "opencodego",
-				"displayName": "%providerDisplayName%",
-				"managementCommand": "opencodego.setApiKey"
-			}
-		],
-		"commands": [
-			{
-				"command": "opencodego.setApiKey",
-				"category": "%commandCategory%",
-				"title": "%command.setApiKey%"
-			},
-			{
-				"command": "opencodego.getApiKey",
-				"category": "%commandCategory%",
-				"title": "%command.getApiKey%"
-			},
-			{
-				"command": "opencodego.openSettings",
-				"category": "%commandCategory%",
-				"title": "%command.openSettings%"
-			},
-			{
-				"command": "opencodego.resetSessionRouting",
-				"category": "%commandCategory%",
-				"title": "%command.resetSessionRouting%"
-			},
-			{
-				"command": "opencodego.generateGitCommitMessage",
-				"title": "%command.generateCommit%",
-				"category": "%commandCategory%",
-				"icon": "$(wand)"
-			},
-			{
-				"command": "opencodego.abortGitCommitMessage",
-				"title": "%command.abortCommit%",
-				"category": "%commandCategory%",
-				"icon": "$(debug-stop)"
-			},
-			{
-				"command": "opencodego.setModelPreset",
-				"category": "%commandCategory%",
-				"title": "%command.setModelPreset%"
-			},
-			{
-				"command": "opencodego.setInferenceBaseUrl",
-				"category": "%commandCategory%",
-				"title": "%command.setInferenceBaseUrl%"
-			},
-			{
-				"command": "opencodego.updateModelList",
-				"category": "%commandCategory%",
-				"title": "%command.updateModelList%"
-			},
-			{
-				"command": "opencodego.checkUsage",
-				"category": "%commandCategory%",
-				"title": "%command.checkUsage%"
-			}
-		],
-		"walkthroughs": [
-			{
-				"id": "opencodeGoGettingStarted",
-				"title": "%walkthrough.title%",
-				"description": "%walkthrough.description%",
-				"steps": [
-					{
-						"id": "setApiKey",
-						"title": "%walkthrough.setApiKey.title%",
-						"description": "%walkthrough.setApiKey.description%",
-						"media": {
-							"markdown": "resources/walkthrough/set-api-key.md"
-						},
-						"completionEvents": [
-							"onCommand:opencodego.setApiKey"
-						]
-					},
-					{
-						"id": "showModels",
-						"title": "%walkthrough.showModels.title%",
-						"description": "%walkthrough.showModels.description%",
-						"media": {
-							"markdown": "resources/walkthrough/show-models.md"
-						}
-					},
-					{
-						"id": "advancedSettings",
-						"title": "%walkthrough.advancedSettings.title%",
-						"description": "%walkthrough.advancedSettings.description%",
-						"media": {
-							"markdown": "resources/walkthrough/advanced-settings.md"
-						}
-					}
-				]
-			}
-		],
-		"menus": {
-			"scm/title": [
-				{
-					"command": "opencodego.generateGitCommitMessage",
-					"group": "navigation",
-					"when": "config.opencodego.enableCommitGeneration && config.git.enabled && scmProvider == git && !opencodego.isGeneratingCommit"
-				},
-				{
-					"command": "opencodego.abortGitCommitMessage",
-					"group": "navigation",
-					"when": "config.git.enabled && scmProvider == git && opencodego.isGeneratingCommit"
-				}
-			],
-			"commandPalette": [
-				{
-					"command": "opencodego.generateGitCommitMessage",
-					"when": "config.opencodego.enableCommitGeneration && config.git.enabled && !opencodego.isGeneratingCommit"
-				},
-				{
-					"command": "opencodego.abortGitCommitMessage",
-					"when": "config.git.enabled && opencodego.isGeneratingCommit"
-				}
-			]
-		},
-		"configuration": {
-			"title": "%config.title%",
-			"properties": {
-				"opencodego.commitLanguage": {
-					"type": "string",
-					"default": "auto",
-					"enum": [
-						"auto",
-						"English",
-						"French",
-						"Italian",
-						"German",
-						"Spanish",
-						"Russian",
-						"Chinese (Simplified)",
-						"Chinese (Traditional)",
-						"Japanese",
-						"Korean",
-						"Czech",
-						"Portuguese (Brazil)",
-						"Turkish",
-						"Polish"
-					],
-					"enumDescriptions": [
-						"%config.commitLanguage.auto.desc%",
-						"%config.commitLanguage.enum.English.desc%",
-						"%config.commitLanguage.enum.French.desc%",
-						"%config.commitLanguage.enum.Italian.desc%",
-						"%config.commitLanguage.enum.German.desc%",
-						"%config.commitLanguage.enum.Spanish.desc%",
-						"%config.commitLanguage.enum.Russian.desc%",
-						"%config.commitLanguage.enum.ChineseSimplified.desc%",
-						"%config.commitLanguage.enum.ChineseTraditional.desc%",
-						"%config.commitLanguage.enum.Japanese.desc%",
-						"%config.commitLanguage.enum.Korean.desc%",
-						"%config.commitLanguage.enum.Czech.desc%",
-						"%config.commitLanguage.enum.PortugueseBrazil.desc%",
-						"%config.commitLanguage.enum.Turkish.desc%",
-						"%config.commitLanguage.enum.Polish.desc%"
-					],
-					"description": "%config.commitLanguage.desc%"
-				},
-				"opencodego.commitModel": {
-					"type": "string",
-					"default": "deepseek-v4-flash",
-					"description": "%config.commitModel.desc%"
-				},
-				"opencodego.commitMessagePrompt": {
-					"type": "string",
-					"default": "",
-					"description": "%config.commitMessagePrompt.desc%"
-				},
-				"opencodego.requestTimeout": {
-					"type": "number",
-					"default": 600000,
-					"minimum": 10000,
-					"description": "%config.requestTimeout.desc%"
-				},
-				"opencodego.delay": {
-					"type": "number",
-					"default": 0,
-					"minimum": 0,
-					"markdownDescription": "%config.delay.desc%"
-				},
-				"opencodego.retry.enabled": {
-					"type": "boolean",
-					"default": true,
-					"description": "%config.retry.enabled.desc%"
-				},
-				"opencodego.retry.max_attempts": {
-					"type": "number",
-					"default": 3,
-					"minimum": 1,
-					"maximum": 10,
-					"description": "%config.retry.maxAttempts.desc%"
-				},
-				"opencodego.retry.interval_ms": {
-					"type": "number",
-					"default": 1000,
-					"minimum": 0,
-					"description": "%config.retry.intervalMs.desc%"
-				},
-				"opencodego.retry.status_codes": {
-					"type": "array",
-					"items": {
-						"type": "integer",
-						"minimum": 100,
-						"maximum": 599
-					},
-					"uniqueItems": true,
-					"default": [],
-					"description": "%config.retry.statusCodes.desc%"
-				},
-				"opencodego.recentCommitsCount": {
-					"type": "number",
-					"default": 10,
-					"minimum": 0,
-					"maximum": 50,
-					"description": "%config.recentCommitsCount.desc%"
-				},
-				"opencodego.commitIncludeCommitDiff": {
-					"type": "boolean",
-					"default": false,
-					"description": "%config.commitIncludeCommitDiff.desc%"
-				},
-				"opencodego.commitAttachContextFiles": {
-					"type": "boolean",
-					"default": true,
-					"description": "%config.commitAttachContextFiles.desc%"
-				},
-				"opencodego.modelPreset": {
-					"type": "string",
-					"default": "precise",
-					"description": "%config.modelPreset.desc%",
-					"editPresentation": "singlelineText"
-				},
-				"opencodego.temperature": {
-					"type": "number",
-					"default": null,
-					"minimum": 0,
-					"maximum": 2,
-					"description": "%config.temperature.desc%"
-				},
-				"opencodego.top_p": {
-					"type": "number",
-					"default": null,
-					"minimum": 0,
-					"maximum": 1,
-					"description": "%config.top_p.desc%"
-				},
-				"opencodego.enableAutoModelDiscovery": {
-					"type": "boolean",
-					"default": true,
-					"description": "%config.enableAutoModelDiscovery.desc%"
-				},
-				"opencodego.showDeprecatedModels": {
-					"type": "boolean",
-					"default": false,
-					"description": "%config.showDeprecatedModels.desc%"
-				},
-				"opencodego.modelsDevUpdateInterval": {
-					"type": "number",
-					"default": 60000,
-					"minimum": 30000,
-					"description": "%config.modelsDevUpdateInterval.desc%"
-				},
-				"opencodego.modelsDevMirrorUrl": {
-					"type": "string",
-					"default": "https://modelsdev-mirror.onesoft.top/catalog.json",
-					"markdownDescription": "%config.modelsDevMirrorUrl.desc%"
-				},
-				"opencodego.modelsDevMirrorToken": {
-					"type": "string",
-					"default": "",
-					"markdownDescription": "%config.modelsDevMirrorToken.desc%"
-				},
-				"opencodego.inferenceBaseUrl": {
-					"type": "string",
-					"default": "",
-					"scope": "machine",
-					"markdownDescription": "%config.inferenceBaseUrl.desc%"
-				},
-				"opencodego.modelPresets": {
-					"type": "array",
-					"default": [
-						{
-							"id": "precise",
-							"label": "Precise",
-							"temperature": 0
-						},
-						{
-							"id": "balanced",
-							"label": "Balanced",
-							"temperature": 1
-						},
-						{
-							"id": "creative",
-							"label": "Creative",
-							"temperature": 1.2
-						},
-						{
-							"id": "extra-creative",
-							"label": "Extra Creative",
-							"temperature": 1.7
-						}
-					],
-					"items": {
-						"type": "object",
-						"required": [
-							"id",
-							"label",
-							"temperature"
-						],
-						"properties": {
-							"id": {
-								"type": "string",
-								"description": "%config.modelPreset.id.desc%"
-							},
-							"label": {
-								"type": "string",
-								"description": "%config.modelPreset.label.desc%"
-							},
-							"temperature": {
-								"type": "number",
-								"description": "%config.modelPreset.temperature.desc%"
-							},
-							"top_p": {
-								"type": "number",
-								"description": "%config.modelPreset.top_p.desc%"
-							}
-						}
-					},
-					"description": "%config.modelPresets.desc%"
-				},
-				"opencodego.readFileLines": {
-					"type": "number",
-					"default": 0,
-					"minimum": 0,
-					"markdownDescription": "%config.readFileLines.desc%"
-				},
-				"opencodego.visionProxyModel": {
-					"type": "string",
-					"default": "qwen-plus-latest",
-					"description": "%config.visionProxyModel.desc%"
-				},
-				"opencodego.visionProxyThinking": {
-					"type": "boolean",
-					"default": false,
-					"description": "%config.visionProxyThinking.desc%"
-				},
-				"opencodego.enableThirdPartyTokenIndicator": {
-					"type": "boolean",
-					"default": true,
-					"description": "%config.enableThirdPartyTokenIndicator.desc%"
-				},
-				"opencodego.visionMaxRounds": {
-					"type": "number",
-					"default": 5,
-					"minimum": 1,
-					"maximum": 20,
-					"markdownDescription": "%config.visionMaxRounds.desc%"
-				},
-				"opencodego.showUsageInTooltip": {
-					"type": "boolean",
-					"default": true,
-					"description": "%config.showUsageInTooltip.desc%"
-				},
-				"opencodego.usageRefreshInterval": {
-					"type": "number",
-					"default": 5,
-					"minimum": 1,
-					"maximum": 60,
-					"markdownDescription": "%config.usageRefreshInterval.desc%"
-				},
-				"opencodego.enableCommitGeneration": {
-					"type": "boolean",
-					"default": true,
-					"description": "%config.enableCommitGeneration.desc%"
-				}
-			}
-		}
-	},
-	"main": "./out/extension.js",
-	"scripts": {
-		"vscode:prepublish": "npm run compile",
-		"compile": "tsc -p ./",
-		"test": "npm run compile && node scripts/test-api-mode.mjs && node scripts/test-thinking-param.mjs && node scripts/test-anthropic-thinking-signature.mjs && node scripts/test-responses-api.mjs && node scripts/test-vision-history.mjs && node scripts/test-anthropic-tool-result-merge.mjs && node scripts/test-base-url.mjs && node scripts/test-store-data-uri.mjs",
-		"test:api-mode": "npm run compile && node scripts/test-api-mode.mjs",
-		"test:thinking-param": "npm run compile && node scripts/test-thinking-param.mjs",
-		"test:anthropic-thinking-signature": "npm run compile && node scripts/test-anthropic-thinking-signature.mjs",
-		"test:responses-api": "npm run compile && node scripts/test-responses-api.mjs",
-		"test:vision-history": "npm run compile && node scripts/test-vision-history.mjs",
-		"test:base-url": "npm run compile && node scripts/test-base-url.mjs",
-		"test:store-data-uri": "npm run compile && node scripts/test-store-data-uri.mjs",
-		"lint": "eslint",
-		"watch": "tsc -watch -p ./",
-		"build": "npx @vscode/vsce package -o extension.vsix",
-		"postinstall": "node scripts/copy-tokenizer.js"
-	},
-	"dependencies": {
-		"@microsoft/tiktokenizer": "^1.0.10"
-	},
-	"devDependencies": {
-		"@eslint/js": "9.39.4",
-		"@types/node": "^22",
-		"@types/vscode": "^1.116.0",
-		"eslint": "9.39.4",
-		"typescript": "^5.9.2",
-		"typescript-eslint": "8.60.1"
-	}
+    "name": "kenari-copilot-provider",
+    "publisher": "SuspiOwl",
+    "displayName": "Kenari Provider for Copilot",
+    "description": "Integrate Kenari models into GitHub Copilot Chat",
+    "icon": "assets/logo.png",
+    "keywords": [
+        "ai",
+        "chat",
+        "copilot",
+        "github-copilot",
+        "language-models",
+        "llm",
+        "kenari",
+        "openai-compatible",
+        "thinking",
+        "git-commit"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/SuspiciousLookingOwl/kenari-copilot"
+    },
+    "homepage": "https://github.com/SuspiciousLookingOwl/kenari-copilot",
+    "bugs": {
+        "url": "https://github.com/SuspiciousLookingOwl/kenari-copilot/issues"
+    },
+    "version": "1.0.0",
+    "engines": {
+        "vscode": "^1.116.0"
+    },
+    "categories": [
+        "AI",
+        "Chat"
+    ],
+    "license": "MIT",
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "contributes": {
+        "languageModelChatProviders": [
+            {
+                "vendor": "kenari",
+                "displayName": "%providerDisplayName%",
+                "managementCommand": "kenari.setApiKey"
+            }
+        ],
+        "commands": [
+            {
+                "command": "kenari.setApiKey",
+                "category": "%commandCategory%",
+                "title": "%command.setApiKey%"
+            },
+            {
+                "command": "kenari.getApiKey",
+                "category": "%commandCategory%",
+                "title": "%command.getApiKey%"
+            },
+            {
+                "command": "kenari.openSettings",
+                "category": "%commandCategory%",
+                "title": "%command.openSettings%"
+            },
+            {
+                "command": "kenari.generateGitCommitMessage",
+                "title": "%command.generateCommit%",
+                "category": "%commandCategory%",
+                "icon": "$(wand)"
+            },
+            {
+                "command": "kenari.abortGitCommitMessage",
+                "title": "%command.abortCommit%",
+                "category": "%commandCategory%",
+                "icon": "$(debug-stop)"
+            },
+            {
+                "command": "kenari.setModelPreset",
+                "category": "%commandCategory%",
+                "title": "%command.setModelPreset%"
+            },
+            {
+                "command": "kenari.setInferenceBaseUrl",
+                "category": "%commandCategory%",
+                "title": "%command.setInferenceBaseUrl%"
+            },
+            {
+                "command": "kenari.updateModelList",
+                "category": "%commandCategory%",
+                "title": "%command.updateModelList%"
+            },
+            {
+                "command": "kenari.checkUsage",
+                "category": "%commandCategory%",
+                "title": "%command.checkUsage%"
+            }
+        ],
+        "walkthroughs": [
+            {
+                "id": "kenariGettingStarted",
+                "title": "%walkthrough.title%",
+                "description": "%walkthrough.description%",
+                "steps": [
+                    {
+                        "id": "setApiKey",
+                        "title": "%walkthrough.setApiKey.title%",
+                        "description": "%walkthrough.setApiKey.description%",
+                        "media": {
+                            "markdown": "resources/walkthrough/set-api-key.md"
+                        },
+                        "completionEvents": [
+                            "onCommand:kenari.setApiKey"
+                        ]
+                    },
+                    {
+                        "id": "showModels",
+                        "title": "%walkthrough.showModels.title%",
+                        "description": "%walkthrough.showModels.description%",
+                        "media": {
+                            "markdown": "resources/walkthrough/show-models.md"
+                        }
+                    },
+                    {
+                        "id": "advancedSettings",
+                        "title": "%walkthrough.advancedSettings.title%",
+                        "description": "%walkthrough.advancedSettings.description%",
+                        "media": {
+                            "markdown": "resources/walkthrough/advanced-settings.md"
+                        }
+                    }
+                ]
+            }
+        ],
+        "menus": {
+            "scm/title": [
+                {
+                    "command": "kenari.generateGitCommitMessage",
+                    "group": "navigation",
+                    "when": "config.kenari.enableCommitGeneration && config.git.enabled && scmProvider == git && !kenari.isGeneratingCommit"
+                },
+                {
+                    "command": "kenari.abortGitCommitMessage",
+                    "group": "navigation",
+                    "when": "config.git.enabled && scmProvider == git && kenari.isGeneratingCommit"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "kenari.generateGitCommitMessage",
+                    "when": "config.kenari.enableCommitGeneration && config.git.enabled && !kenari.isGeneratingCommit"
+                },
+                {
+                    "command": "kenari.abortGitCommitMessage",
+                    "when": "config.git.enabled && kenari.isGeneratingCommit"
+                }
+            ]
+        },
+        "configuration": {
+            "title": "%config.title%",
+            "properties": {
+                "kenari.commitLanguage": {
+                    "type": "string",
+                    "default": "auto",
+                    "enum": [
+                        "auto",
+                        "English",
+                        "Indonesian"
+                    ],
+                    "enumDescriptions": [
+                        "%config.commitLanguage.auto.desc%",
+                        "%config.commitLanguage.enum.English.desc%",
+                        "%config.commitLanguage.enum.Indonesian.desc%"
+                    ],
+                    "description": "%config.commitLanguage.desc%"
+                },
+                "kenari.commitModel": {
+                    "type": "string",
+                    "default": "deepseek-v4-flash",
+                    "description": "%config.commitModel.desc%"
+                },
+                "kenari.commitMessagePrompt": {
+                    "type": "string",
+                    "default": "",
+                    "description": "%config.commitMessagePrompt.desc%"
+                },
+                "kenari.requestTimeout": {
+                    "type": "number",
+                    "default": 600000,
+                    "minimum": 10000,
+                    "description": "%config.requestTimeout.desc%"
+                },
+                "kenari.delay": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "markdownDescription": "%config.delay.desc%"
+                },
+                "kenari.retry.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.retry.enabled.desc%"
+                },
+                "kenari.retry.max_attempts": {
+                    "type": "number",
+                    "default": 3,
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "%config.retry.maxAttempts.desc%"
+                },
+                "kenari.retry.interval_ms": {
+                    "type": "number",
+                    "default": 1000,
+                    "minimum": 0,
+                    "description": "%config.retry.intervalMs.desc%"
+                },
+                "kenari.retry.status_codes": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer",
+                        "minimum": 100,
+                        "maximum": 599
+                    },
+                    "uniqueItems": true,
+                    "default": [],
+                    "description": "%config.retry.statusCodes.desc%"
+                },
+                "kenari.recentCommitsCount": {
+                    "type": "number",
+                    "default": 10,
+                    "minimum": 0,
+                    "maximum": 50,
+                    "description": "%config.recentCommitsCount.desc%"
+                },
+                "kenari.commitIncludeCommitDiff": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "%config.commitIncludeCommitDiff.desc%"
+                },
+                "kenari.commitAttachContextFiles": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.commitAttachContextFiles.desc%"
+                },
+                "kenari.modelPreset": {
+                    "type": "string",
+                    "default": "precise",
+                    "description": "%config.modelPreset.desc%",
+                    "editPresentation": "singlelineText"
+                },
+                "kenari.temperature": {
+                    "type": "number",
+                    "default": null,
+                    "minimum": 0,
+                    "maximum": 2,
+                    "description": "%config.temperature.desc%"
+                },
+                "kenari.top_p": {
+                    "type": "number",
+                    "default": null,
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "%config.top_p.desc%"
+                },
+                "kenari.modelListRefreshInterval": {
+                    "type": "number",
+                    "default": 60000,
+                    "minimum": 30000,
+                    "description": "%config.modelListRefreshInterval.desc%"
+                },
+                "kenari.inferenceBaseUrl": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "machine",
+                    "markdownDescription": "%config.inferenceBaseUrl.desc%"
+                },
+                "kenari.modelPresets": {
+                    "type": "array",
+                    "default": [
+                        {
+                            "id": "precise",
+                            "label": "Precise",
+                            "temperature": 0
+                        },
+                        {
+                            "id": "balanced",
+                            "label": "Balanced",
+                            "temperature": 1
+                        },
+                        {
+                            "id": "creative",
+                            "label": "Creative",
+                            "temperature": 1.2
+                        },
+                        {
+                            "id": "extra-creative",
+                            "label": "Extra Creative",
+                            "temperature": 1.7
+                        }
+                    ],
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "id",
+                            "label",
+                            "temperature"
+                        ],
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "%config.modelPreset.id.desc%"
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "%config.modelPreset.label.desc%"
+                            },
+                            "temperature": {
+                                "type": "number",
+                                "description": "%config.modelPreset.temperature.desc%"
+                            },
+                            "top_p": {
+                                "type": "number",
+                                "description": "%config.modelPreset.top_p.desc%"
+                            }
+                        }
+                    },
+                    "description": "%config.modelPresets.desc%"
+                },
+                "kenari.readFileLines": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "markdownDescription": "%config.readFileLines.desc%"
+                },
+                "kenari.visionProxyModel": {
+                    "type": "string",
+                    "default": "qwen3-7-plus",
+                    "description": "%config.visionProxyModel.desc%"
+                },
+                "kenari.visionProxyThinking": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "%config.visionProxyThinking.desc%"
+                },
+                "kenari.enableThirdPartyTokenIndicator": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.enableThirdPartyTokenIndicator.desc%"
+                },
+                "kenari.visionMaxRounds": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 20,
+                    "markdownDescription": "%config.visionMaxRounds.desc%"
+                },
+                "kenari.showUsageInTooltip": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.showUsageInTooltip.desc%"
+                },
+                "kenari.usageRefreshInterval": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 60,
+                    "markdownDescription": "%config.usageRefreshInterval.desc%"
+                },
+                "kenari.enableCommitGeneration": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.enableCommitGeneration.desc%"
+                }
+            }
+        }
+    },
+    "main": "./out/extension.js",
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.{js,mjs}\"",
+        "test": "npm run compile && node scripts/test-api-mode.mjs && node scripts/test-api-errors.mjs && node scripts/test-anthropic-thinking-signature.mjs && node scripts/test-responses-api.mjs && node scripts/test-vision-history.mjs && node scripts/test-anthropic-tool-result-merge.mjs && node scripts/test-base-url.mjs && node scripts/test-store-data-uri.mjs",
+        "test:api-mode": "npm run compile && node scripts/test-api-mode.mjs",
+        "test:api-errors": "npm run compile && node scripts/test-api-errors.mjs",
+        "test:anthropic-thinking-signature": "npm run compile && node scripts/test-anthropic-thinking-signature.mjs",
+        "test:responses-api": "npm run compile && node scripts/test-responses-api.mjs",
+        "test:vision-history": "npm run compile && node scripts/test-vision-history.mjs",
+        "test:base-url": "npm run compile && node scripts/test-base-url.mjs",
+        "test:store-data-uri": "npm run compile && node scripts/test-store-data-uri.mjs",
+        "lint": "eslint",
+        "watch": "tsc -watch -p ./",
+        "build": "npx @vscode/vsce package -o extension.vsix",
+        "postinstall": "node scripts/copy-tokenizer.js"
+    },
+    "dependencies": {
+        "@microsoft/tiktokenizer": "^1.0.10"
+    },
+    "devDependencies": {
+        "@eslint/js": "9.39.4",
+        "@types/node": "^22",
+        "@types/vscode": "^1.116.0",
+        "eslint": "9.39.4",
+        "prettier": "^3.9.10",
+        "typescript": "^5.9.2",
+        "typescript-eslint": "8.60.1"
+    }
 }
