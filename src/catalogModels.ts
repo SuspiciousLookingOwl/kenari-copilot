@@ -27,19 +27,6 @@ function deriveMaxInputTokens(contextWindow: number, maxOutputTokens: number): n
 	return Math.max(MIN_INPUT_BUDGET, contextWindow - maxOutputTokens);
 }
 
-/**
- * Cap on the output tokens requested per call.
- *
- * `max_output_tokens` is the model's capability, which for several models sits
- * just below its whole context window. Kenari reserves balance for the worst
- * case before each request (input + `max_tokens` at the output price), so
- * sending that capability would reserve the price of a full-length answer on
- * every call and could fail with `insufficient_balance`. Kenari also silently
- * lowers `max_tokens` when the balance cannot cover it, causing early cut-offs.
- *
- * The capability is still declared to VS Code, and the upstream limit still
- * applies; this only bounds what one request asks for.
- */
 const MAX_REQUESTED_OUTPUT_TOKENS = 32768;
 
 /**
@@ -140,7 +127,7 @@ function resolveFromCatalog(modelId: string): ModelMeta {
 	const inputModalities = entry?.modalities?.input ?? [];
 	const pricing = entry?.pricing;
 	const contextWindow = entry?.context_length ?? DEFAULT_CONTEXT_LENGTH;
-	const maxOutputTokens = entry?.max_output_tokens ?? DEFAULT_MAX_TOKENS;
+	const maxOutputTokens = Math.min(entry?.max_output_tokens ?? DEFAULT_MAX_TOKENS, MAX_REQUESTED_OUTPUT_TOKENS);
 
 	return {
 		displayName: entry?.name ?? modelId,
@@ -172,7 +159,7 @@ function resolveFromCatalog(modelId: string): ModelMeta {
 function applyOverride(meta: ModelMeta, override?: ModelMetaOverride): ModelMeta {
 	if (!override) return meta;
 	const contextWindow = override.contextWindow ?? meta.contextWindow;
-	const maxOutputTokens = override.maxOutputTokens ?? meta.maxOutputTokens;
+	const maxOutputTokens = Math.min(override.maxOutputTokens ?? meta.maxOutputTokens, MAX_REQUESTED_OUTPUT_TOKENS);
 	return {
 		displayName: override.displayName ?? meta.displayName,
 		vision: override.vision ?? meta.vision,
